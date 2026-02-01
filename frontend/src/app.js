@@ -34,6 +34,16 @@ const drone = new THREE.Mesh(
 );
 scene.add(drone);
 
+const cameraOffset = new THREE.Vector3(8, 6, 8);
+const keyboardState = {
+  ArrowUp: false,
+  ArrowDown: false,
+  ArrowLeft: false,
+  ArrowRight: false,
+};
+const KEY_PITCH = 1.2;
+const KEY_ROLL = 1.2;
+
 function resize() {
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
@@ -45,13 +55,67 @@ window.addEventListener("resize", resize);
 resize();
 
 function getCommand() {
-  return {
+  const command = {
     throttle: parseFloat(throttleEl.value),
     pitch: parseFloat(pitchEl.value),
     roll: parseFloat(rollEl.value),
     yaw: parseFloat(yawEl.value),
   };
+  const keyboard = getKeyboardCommand();
+  if (keyboard.active) {
+    command.pitch = keyboard.pitch;
+    command.roll = keyboard.roll;
+  }
+  return command;
 }
+
+function getKeyboardCommand() {
+  let pitch = 0;
+  let roll = 0;
+  if (keyboardState.ArrowUp) {
+    pitch -= KEY_PITCH;
+  }
+  if (keyboardState.ArrowDown) {
+    pitch += KEY_PITCH;
+  }
+  if (keyboardState.ArrowLeft) {
+    roll -= KEY_ROLL;
+  }
+  if (keyboardState.ArrowRight) {
+    roll += KEY_ROLL;
+  }
+  return {
+    active: pitch !== 0 || roll !== 0,
+    pitch,
+    roll,
+  };
+}
+
+function isEditableTarget(target) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  const tag = target.tagName.toLowerCase();
+  return tag === "input" || tag === "textarea" || target.isContentEditable;
+}
+
+function handleKeyChange(event, isDown) {
+  if (isEditableTarget(event.target)) {
+    return;
+  }
+  if (event.key in keyboardState) {
+    keyboardState[event.key] = isDown;
+    event.preventDefault();
+  }
+}
+
+window.addEventListener("keydown", (event) => handleKeyChange(event, true));
+window.addEventListener("keyup", (event) => handleKeyChange(event, false));
+window.addEventListener("blur", () => {
+  for (const key of Object.keys(keyboardState)) {
+    keyboardState[key] = false;
+  }
+});
 
 const apiHost = location.hostname || "127.0.0.1";
 const apiBase = `http://${apiHost}:8000`;
@@ -82,6 +146,9 @@ stopEl.addEventListener("click", async () => {
 
 function animate() {
   requestAnimationFrame(animate);
+  const desiredCameraPosition = drone.position.clone().add(cameraOffset);
+  camera.position.lerp(desiredCameraPosition, 0.08);
+  camera.lookAt(drone.position);
   renderer.render(scene, camera);
 }
 animate();
