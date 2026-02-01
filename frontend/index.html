@@ -56,6 +56,14 @@
       button.secondary {
         background: #555;
       }
+      select {
+        width: 100%;
+        padding: 6px;
+        background: #1b1b1b;
+        color: #f1f1f1;
+        border: 1px solid #333;
+        margin-top: 6px;
+      }
       .button-row {
         display: flex;
         gap: 8px;
@@ -111,11 +119,12 @@
 def run(sdk):
     import time
     hover_throttle = 0.6
-    rate_limit = 0.8
+    rate_limit = 0.6
     gain = 0.9
     search_yaw = 0.4
+    yaw_gain = 1.2
     offset_limit = 0.12
-    area_min = 150.0
+    area_min = 0.0
     required_stable = 8
     stable_frames = 0
 
@@ -143,9 +152,9 @@ def run(sdk):
             time.sleep(0.05)
             continue
 
-        pitch_rate = max(-rate_limit, min(rate_limit, offset_x * gain))
-        roll_rate = max(-rate_limit, min(rate_limit, -offset_y * gain))
-        sdk.set_command(hover_throttle, pitch_rate, roll_rate, 0.0)
+        yaw_rate = max(-rate_limit, min(rate_limit, offset_x * yaw_gain))
+        pitch_rate = max(-rate_limit, min(rate_limit, -offset_y * gain))
+        sdk.set_command(hover_throttle, pitch_rate, 0.0, yaw_rate)
         time.sleep(0.02)
         </textarea>
         <div class="button-row">
@@ -163,6 +172,21 @@ def run(sdk):
           <button id="test-stop" class="secondary">Stop</button>
         </div>
         <div id="test-status">Idle</div>
+      </div>
+
+      <div class="section">
+        <strong>Reinforcement Learning</strong>
+        <div class="button-row">
+          <button id="rl-start">Train</button>
+          <button id="rl-stop" class="secondary">Stop</button>
+        </div>
+        <label>Control Mode</label>
+        <select id="control-mode">
+          <option value="manual">Manual</option>
+          <option value="script">Script</option>
+          <option value="rl">RL</option>
+        </select>
+        <div id="rl-status">Idle</div>
       </div>
 
       <div class="section">

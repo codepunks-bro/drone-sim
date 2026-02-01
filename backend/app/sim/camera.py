@@ -40,8 +40,9 @@ def _world_to_pixel(
     drone: DroneState, point_xyz: List[float], cfg: CameraConfig
 ) -> Tuple[int, int]:
     x_body, y_body = _world_to_body(drone, point_xyz)
-    px = int(cfg.width / 2 + x_body / cfg.meters_per_pixel)
-    py = int(cfg.height / 2 - y_body / cfg.meters_per_pixel)
+    # Map body right (y) to image x, body forward (x) to image up.
+    px = int(cfg.width / 2 + y_body / cfg.meters_per_pixel)
+    py = int(cfg.height / 2 - x_body / cfg.meters_per_pixel)
     return px, py
 
 
@@ -69,8 +70,12 @@ def render_topdown(
     cv2.circle(img, center, 4, cfg.drone_color_bgr, -1)
     heading_len = 12
     yaw = drone.rotation[2]
-    hx = int(center[0] + math.cos(yaw) * heading_len)
-    hy = int(center[1] - math.sin(yaw) * heading_len)
+    ahead_world = [
+        drone.position[0] + math.cos(yaw) * (heading_len * cfg.meters_per_pixel),
+        drone.position[1] + math.sin(yaw) * (heading_len * cfg.meters_per_pixel),
+        drone.position[2],
+    ]
+    hx, hy = _world_to_pixel(drone, ahead_world, cfg)
     cv2.line(img, center, (hx, hy), cfg.drone_color_bgr, 2)
 
     return img

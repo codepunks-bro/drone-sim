@@ -16,6 +16,10 @@ const testStopEl = document.getElementById("test-stop");
 const testStatusEl = document.getElementById("test-status");
 const loadAutopilotEl = document.getElementById("load-autopilot");
 const runAutopilotEl = document.getElementById("run-autopilot");
+const rlStartEl = document.getElementById("rl-start");
+const rlStopEl = document.getElementById("rl-stop");
+const rlStatusEl = document.getElementById("rl-status");
+const controlModeEl = document.getElementById("control-mode");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0a0a);
@@ -149,11 +153,12 @@ setInterval(() => {
 const autopilotScript = `def run(sdk):
     import time
     hover_throttle = 0.6
-    rate_limit = 0.8
+    rate_limit = 0.6
     gain = 0.9
     search_yaw = 0.4
+    yaw_gain = 1.2
     offset_limit = 0.12
-    area_min = 150.0
+    area_min = 0.0
     required_stable = 8
     stable_frames = 0
 
@@ -181,9 +186,9 @@ const autopilotScript = `def run(sdk):
             time.sleep(0.05)
             continue
 
-        pitch_rate = max(-rate_limit, min(rate_limit, offset_x * gain))
-        roll_rate = max(-rate_limit, min(rate_limit, -offset_y * gain))
-        sdk.set_command(hover_throttle, pitch_rate, roll_rate, 0.0)
+        yaw_rate = max(-rate_limit, min(rate_limit, offset_x * yaw_gain))
+        pitch_rate = max(-rate_limit, min(rate_limit, -offset_y * gain))
+        sdk.set_command(hover_throttle, pitch_rate, 0.0, yaw_rate)
         time.sleep(0.02)
 `;
 
@@ -193,10 +198,12 @@ runEl.addEventListener("click", async () => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source: scriptEl.value }),
   });
+  controlModeEl.value = "script";
 });
 
 stopEl.addEventListener("click", async () => {
   await fetch(`${apiBase}/scripts/stop`, { method: "POST" });
+  controlModeEl.value = "manual";
 });
 
 loadAutopilotEl.addEventListener("click", () => {
@@ -210,6 +217,7 @@ runAutopilotEl.addEventListener("click", async () => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source: scriptEl.value }),
   });
+  controlModeEl.value = "script";
 });
 
 testStartEl.addEventListener("click", async () => {
@@ -234,6 +242,41 @@ async function refreshTestStatus() {
 }
 
 setInterval(refreshTestStatus, 500);
+
+controlModeEl.addEventListener("change", async () => {
+  const mode = controlModeEl.value;
+  await fetch(`${apiBase}/control/mode`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+});
+
+rlStartEl.addEventListener("click", async () => {
+  await fetch(`${apiBase}/rl/start`, { method: "POST" });
+});
+
+rlStopEl.addEventListener("click", async () => {
+  await fetch(`${apiBase}/rl/stop`, { method: "POST" });
+});
+
+async function refreshRlStatus() {
+  try {
+    const response = await fetch(`${apiBase}/rl/status`);
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    rlStatusEl.textContent = JSON.stringify(data, null, 2);
+    if (data.mode && controlModeEl.value !== data.mode) {
+      controlModeEl.value = data.mode;
+    }
+  } catch (error) {
+    // Ignore transient RL status errors.
+  }
+}
+
+setInterval(refreshRlStatus, 700);
 
 function animate() {
   requestAnimationFrame(animate);

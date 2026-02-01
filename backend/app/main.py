@@ -11,6 +11,8 @@ from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from .rl import RLTrainer, build_observation
+from .rl.policy import PolicyModel
 from .sim.camera import CameraConfig, render_topdown
 from .sim.core import SimCore
 from .sim.drone import ControlCommand
@@ -27,6 +29,10 @@ class ScriptRunRequest(BaseModel):
 class SceneModel(BaseModel):
     bounds: Dict[str, List[float]]
     obstacles: List[Dict[str, Any]]
+
+
+class ControlModeRequest(BaseModel):
+    mode: str
 
 
 class TestStartRequest(BaseModel):
@@ -86,6 +92,8 @@ class AppState:
     camera_seq: int = 0
     camera_send_stride: int = 3
     test: TestState = field(default_factory=TestState)
+    control_mode: str = "manual"
+    rl_trainer: Optional[RLTrainer] = None
     scene_path: Path = field(
         default_factory=lambda: Path(__file__).resolve().parent / "data" / "scene.json"
     )
@@ -181,12 +189,16 @@ def _update_test(telemetry: Dict[str, Any]) -> None:
 @app.on_event("startup")
 async def _startup() -> None:
     state.sim.world = _build_default_world()
+    state.rl_trainer = RLTrainer(world=state.sim.world, camera=state.camera)
+    state.rl_trainer.load()
     asyncio.create_task(simulation_loop())
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     state.script_host.stop()
+    if state.rl_trainer is not None:
+        state.rl_trainer.stop()
 
 
 @app.websocket("/ws")
@@ -208,12 +220,15 @@ async def ws_endpoint(ws: WebSocket) -> None:
 @app.post("/scripts/run")
 async def run_script(req: ScriptRunRequest) -> Dict[str, str]:
     state.script_host.start(req.source)
+    state.control_mode = "script"
     return {"status": "started"}
 
 
 @app.post("/scripts/stop")
 async def stop_script() -> Dict[str, str]:
     state.script_host.stop()
+    if state.control_mode == "script":
+        state.control_mode = "manual"
     return {"status": "stopped"}
 
 
@@ -329,6 +344,40 @@ async def test_status() -> Dict[str, Any]:
     return state.test.to_dict(state.sim.time_s)
 
 
+@app.post("/control/mode")
+async def set_control_mode(req: ControlModeRequest) -> Dict[str, str]:
+    mode = req.mode.lower().strip()
+    if mode not in {"manual", "script", "rl"}:
+        return {"status": "error", "message": "invalid mode"}
+    state.control_mode = mode
+    return {"status": "ok", "mode": state.control_mode}
+
+
+@app.post("/rl/start")
+async def start_rl() -> Dict[str, Any]:
+    if state.rl_trainer is None:
+        state.rl_trainer = RLTrainer(world=state.sim.world, camera=state.camera)
+    state.rl_trainer.start()
+    return state.rl_trainer.status.to_dict()
+
+
+@app.post("/rl/stop")
+async def stop_rl() -> Dict[str, Any]:
+    if state.rl_trainer is None:
+        return {"running": False}
+    state.rl_trainer.stop()
+    return state.rl_trainer.status.to_dict()
+
+
+@app.get("/rl/status")
+async def rl_status() -> Dict[str, Any]:
+    if state.rl_trainer is None:
+        return {"running": False}
+    status = state.rl_trainer.status.to_dict()
+    status["mode"] = state.control_mode
+    return status
+
+
 async def simulation_loop() -> None:
     tick = 0.02
     while True:
@@ -336,7 +385,17 @@ async def simulation_loop() -> None:
             telemetry = state.recorder.next_frame()
         else:
             script_command = state.script_host.pull_latest_command()
-            if script_command is not None:
+            if state.control_mode == "rl" and state.rl_trainer is not None:
+                pre_frame = render_topdown(state.sim.drone, state.sim.world, state.camera)
+                pre_vision = state.vision.process(pre_frame).to_dict()
+                obs = build_observation(
+                    state.sim, pre_vision, state.sim.world, state.rl_trainer.config
+                )
+                action = state.rl_trainer.policy.act(obs)
+                state.sim.command = PolicyModel.action_to_command(
+                    action, state.rl_trainer.config
+                )
+            elif state.control_mode == "script" and script_command is not None:
                 state.sim.command = ControlCommand(**script_command)
             else:
                 state.sim.command = state.manual_command
@@ -351,6 +410,9 @@ async def simulation_loop() -> None:
             telemetry["vision"] = vision.to_dict()
             _update_test(telemetry)
             telemetry["test"] = state.test.to_dict(state.sim.time_s)
+            if state.rl_trainer is not None:
+                telemetry["rl"] = state.rl_trainer.status.to_dict()
+                telemetry["rl"]["mode"] = state.control_mode
             state.script_host.push_telemetry(telemetry)
             state.recorder.add_frame(telemetry)
 

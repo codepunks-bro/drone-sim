@@ -7,11 +7,12 @@ def _clamp(value: float, limit: float) -> float:
 
 def run(sdk) -> None:
     hover_throttle = 0.6
-    rate_limit = 0.8
+    rate_limit = 0.6
     gain = 0.9
     search_yaw = 0.4
+    yaw_gain = 1.2
     offset_limit = 0.12
-    area_min = 150.0
+    area_min = 0.0
     required_stable = 8
     stable_frames = 0
 
@@ -39,7 +40,7 @@ def run(sdk) -> None:
             time.sleep(0.05)
             continue
 
-        pitch_rate = _clamp(offset_x * gain, rate_limit)
-        roll_rate = _clamp(-offset_y * gain, rate_limit)
-        sdk.set_command(hover_throttle, pitch_rate, roll_rate, 0.0)
+        yaw_rate = _clamp(offset_x * yaw_gain, rate_limit)
+        pitch_rate = _clamp(-offset_y * gain, rate_limit)
+        sdk.set_command(hover_throttle, pitch_rate, 0.0, yaw_rate)
         time.sleep(0.02)
