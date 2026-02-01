@@ -84,6 +84,16 @@
         font-size: 12px;
         white-space: pre-wrap;
       }
+      #rl-status {
+        font-size: 12px;
+        white-space: pre-wrap;
+      }
+      #rl-chart {
+        width: 100%;
+        height: 140px;
+        background: #0a0a0a;
+        border: 1px solid #333;
+      }
     </style>
   </head>
   <body>
@@ -186,6 +196,14 @@ def run(sdk):
           <option value="script">Script</option>
           <option value="rl">RL</option>
         </select>
+        <label>Models</label>
+        <select id="rl-models"></select>
+        <div class="button-row">
+          <button id="rl-model-save">Save</button>
+          <button id="rl-model-load" class="secondary">Load</button>
+          <button id="rl-model-activate">Set Active</button>
+        </div>
+        <canvas id="rl-chart" width="320" height="140"></canvas>
         <div id="rl-status">Idle</div>
       </div>
 

@@ -20,6 +20,11 @@ const rlStartEl = document.getElementById("rl-start");
 const rlStopEl = document.getElementById("rl-stop");
 const rlStatusEl = document.getElementById("rl-status");
 const controlModeEl = document.getElementById("control-mode");
+const rlModelsEl = document.getElementById("rl-models");
+const rlModelSaveEl = document.getElementById("rl-model-save");
+const rlModelLoadEl = document.getElementById("rl-model-load");
+const rlModelActivateEl = document.getElementById("rl-model-activate");
+const rlChartEl = document.getElementById("rl-chart");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0a0a);
@@ -277,6 +282,124 @@ async function refreshRlStatus() {
 }
 
 setInterval(refreshRlStatus, 700);
+
+async function refreshRlModels() {
+  try {
+    const response = await fetch(`${apiBase}/rl/models`);
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    const models = data.models || [];
+    const active = data.active || null;
+    rlModelsEl.innerHTML = "";
+    for (const model of models) {
+      const option = document.createElement("option");
+      option.value = model.name;
+      const label = `${model.name} (${(model.avg_reward || 0).toFixed(2)})`;
+      option.textContent = label;
+      if (active && model.name === active) {
+        option.selected = true;
+      }
+      rlModelsEl.appendChild(option);
+    }
+  } catch (error) {
+    // Ignore transient model errors.
+  }
+}
+
+async function refreshRlMetrics() {
+  try {
+    const response = await fetch(`${apiBase}/rl/metrics`);
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    drawRlChart(data.rewards || [], data.rolling || []);
+  } catch (error) {
+    // Ignore transient metric errors.
+  }
+}
+
+function drawRlChart(rewards, rolling) {
+  if (!rlChartEl) return;
+  const ctx = rlChartEl.getContext("2d");
+  if (!ctx) return;
+  const width = rlChartEl.width;
+  const height = rlChartEl.height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#0a0a0a";
+  ctx.fillRect(0, 0, width, height);
+
+  const series = [rewards, rolling];
+  const colors = ["#2d7ff9", "#7dd3fc"];
+  const flat = rewards.concat(rolling);
+  if (flat.length === 0) {
+    ctx.fillStyle = "#777";
+    ctx.font = "12px Arial";
+    ctx.fillText("No data yet", 8, 16);
+    return;
+  }
+  let minVal = Math.min(...flat);
+  let maxVal = Math.max(...flat);
+  if (minVal === maxVal) {
+    minVal -= 1;
+    maxVal += 1;
+  }
+
+  series.forEach((data, idx) => {
+    if (!data.length) return;
+    ctx.strokeStyle = colors[idx];
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    data.forEach((value, i) => {
+      const x = (i / (data.length - 1 || 1)) * (width - 10) + 5;
+      const y = height - 5 - ((value - minVal) / (maxVal - minVal)) * (height - 10);
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    ctx.stroke();
+  });
+}
+
+rlModelSaveEl.addEventListener("click", async () => {
+  const name = prompt("Model name", `model_${Date.now()}`);
+  if (!name) return;
+  await fetch(`${apiBase}/rl/models/save`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  await refreshRlModels();
+});
+
+rlModelLoadEl.addEventListener("click", async () => {
+  const name = rlModelsEl.value;
+  if (!name) return;
+  await fetch(`${apiBase}/rl/models/load`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  await refreshRlModels();
+});
+
+rlModelActivateEl.addEventListener("click", async () => {
+  const name = rlModelsEl.value;
+  if (!name) return;
+  await fetch(`${apiBase}/rl/models/active`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  await refreshRlModels();
+});
+
+setInterval(refreshRlModels, 2000);
+setInterval(refreshRlMetrics, 1000);
 
 function animate() {
   requestAnimationFrame(animate);
