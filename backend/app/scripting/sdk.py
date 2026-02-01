@@ -34,5 +34,11 @@ class DroneSDK:
                 return None
         return None
 
+    def get_vision(self, timeout: float = 0.1) -> Optional[Dict[str, Any]]:
+        telemetry = self.get_telemetry(timeout=timeout)
+        if telemetry is None:
+            return None
+        return telemetry.data.get("vision")
+
     def should_stop(self) -> bool:
         return self._stop_event.is_set()

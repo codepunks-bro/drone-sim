@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import cv2
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from .sim.camera import CameraConfig, render_topdown
 from .sim.core import SimCore
 from .sim.drone import ControlCommand
 from .sim.recording import Recorder
 from .sim.world import SphereObstacle, WorldState
 from .scripting.host import ScriptHost
+from .vision.processor import VisionProcessor
 
 
 class ScriptRunRequest(BaseModel):
@@ -25,6 +29,49 @@ class SceneModel(BaseModel):
     obstacles: List[Dict[str, Any]]
 
 
+class TestStartRequest(BaseModel):
+    max_time_s: Optional[float] = None
+    target_offset_max: Optional[float] = None
+    target_area_min: Optional[float] = None
+    required_stable_frames: Optional[int] = None
+
+
+@dataclass
+class TestConfig:
+    max_time_s: float = 25.0
+    target_offset_max: float = 0.15
+    target_area_min: float = 140.0
+    required_stable_frames: int = 10
+
+
+@dataclass
+class TestState:
+    running: bool = False
+    passed: bool = False
+    failed: bool = False
+    reason: str = ""
+    start_time_s: float = 0.0
+    stable_frames: int = 0
+    config: TestConfig = field(default_factory=TestConfig)
+
+    def to_dict(self, sim_time_s: float) -> Dict[str, Any]:
+        elapsed = max(0.0, sim_time_s - self.start_time_s) if self.running else 0.0
+        return {
+            "running": self.running,
+            "passed": self.passed,
+            "failed": self.failed,
+            "reason": self.reason,
+            "elapsed_s": elapsed,
+            "stable_frames": self.stable_frames,
+            "config": {
+                "max_time_s": self.config.max_time_s,
+                "target_offset_max": self.config.target_offset_max,
+                "target_area_min": self.config.target_area_min,
+                "required_stable_frames": self.config.required_stable_frames,
+            },
+        }
+
+
 @dataclass
 class AppState:
     sim: SimCore = field(default_factory=SimCore)
@@ -32,6 +79,13 @@ class AppState:
     manual_command: ControlCommand = field(default_factory=ControlCommand)
     clients: Set[WebSocket] = field(default_factory=set)
     recorder: Recorder = field(default_factory=Recorder)
+    camera: CameraConfig = field(default_factory=CameraConfig)
+    vision: VisionProcessor = field(default_factory=VisionProcessor)
+    latest_frame: Optional[Any] = None
+    latest_frame_jpeg: Optional[bytes] = None
+    camera_seq: int = 0
+    camera_send_stride: int = 3
+    test: TestState = field(default_factory=TestState)
     scene_path: Path = field(
         default_factory=lambda: Path(__file__).resolve().parent / "data" / "scene.json"
     )
@@ -56,6 +110,72 @@ def _build_default_world() -> WorldState:
         SphereObstacle(center=[-6.0, 2.0, 3.0], radius=2.0),
     ]
     return world
+
+
+def _start_test(req: Optional[TestStartRequest]) -> None:
+    config = TestConfig()
+    if req is not None:
+        if req.max_time_s is not None:
+            config.max_time_s = req.max_time_s
+        if req.target_offset_max is not None:
+            config.target_offset_max = req.target_offset_max
+        if req.target_area_min is not None:
+            config.target_area_min = req.target_area_min
+        if req.required_stable_frames is not None:
+            config.required_stable_frames = req.required_stable_frames
+    state.test = TestState(
+        running=True,
+        passed=False,
+        failed=False,
+        reason="",
+        start_time_s=state.sim.time_s,
+        stable_frames=0,
+        config=config,
+    )
+
+
+def _stop_test(reason: str = "stopped") -> None:
+    state.test.running = False
+    state.test.reason = reason
+
+
+def _update_test(telemetry: Dict[str, Any]) -> None:
+    test = state.test
+    if not test.running:
+        return
+    sim_time_s = float(telemetry.get("time", state.sim.time_s))
+    elapsed = sim_time_s - test.start_time_s
+    if telemetry.get("collided"):
+        test.running = False
+        test.failed = True
+        test.reason = "collision"
+        return
+    if elapsed >= test.config.max_time_s:
+        test.running = False
+        test.failed = True
+        test.reason = "timeout"
+        return
+
+    vision = telemetry.get("vision") or {}
+    target_visible = bool(vision.get("target_visible"))
+    offset = vision.get("target_offset") or [0.0, 0.0]
+    area = float(vision.get("target_area") or 0.0)
+    if target_visible:
+        if (
+            abs(float(offset[0])) <= test.config.target_offset_max
+            and abs(float(offset[1])) <= test.config.target_offset_max
+            and area >= test.config.target_area_min
+        ):
+            test.stable_frames += 1
+        else:
+            test.stable_frames = 0
+    else:
+        test.stable_frames = 0
+
+    if test.stable_frames >= test.config.required_stable_frames:
+        test.running = False
+        test.passed = True
+        test.reason = "target_acquired"
 
 
 @app.on_event("startup")
@@ -113,6 +233,20 @@ async def get_scene() -> SceneModel:
         {"center": o.center, "radius": o.radius} for o in state.sim.world.obstacles
     ]
     return SceneModel(bounds=bounds, obstacles=obstacles)
+
+
+@app.get("/camera/frame")
+async def get_camera_frame() -> Response:
+    if state.latest_frame_jpeg is not None:
+        return Response(content=state.latest_frame_jpeg, media_type="image/jpeg")
+    if state.latest_frame is None:
+        return Response(status_code=204)
+    ok, encoded = cv2.imencode(".jpg", state.latest_frame)
+    if not ok:
+        return Response(status_code=500)
+    jpeg = encoded.tobytes()
+    state.latest_frame_jpeg = jpeg
+    return Response(content=jpeg, media_type="image/jpeg")
 
 
 @app.post("/scene")
@@ -178,6 +312,23 @@ async def recording_status() -> Dict[str, Any]:
     }
 
 
+@app.post("/tests/start")
+async def start_test(req: Optional[TestStartRequest] = None) -> Dict[str, Any]:
+    _start_test(req)
+    return state.test.to_dict(state.sim.time_s)
+
+
+@app.post("/tests/stop")
+async def stop_test() -> Dict[str, Any]:
+    _stop_test()
+    return state.test.to_dict(state.sim.time_s)
+
+
+@app.get("/tests/status")
+async def test_status() -> Dict[str, Any]:
+    return state.test.to_dict(state.sim.time_s)
+
+
 async def simulation_loop() -> None:
     tick = 0.02
     while True:
@@ -192,14 +343,35 @@ async def simulation_loop() -> None:
 
             state.sim.step(tick)
             telemetry = state.sim.drone.to_telemetry(state.sim.time_s)
+            frame = render_topdown(state.sim.drone, state.sim.world, state.camera)
+            state.latest_frame = frame
+            ok, encoded = cv2.imencode(".jpg", frame)
+            state.latest_frame_jpeg = encoded.tobytes() if ok else None
+            vision = state.vision.process(frame)
+            telemetry["vision"] = vision.to_dict()
+            _update_test(telemetry)
+            telemetry["test"] = state.test.to_dict(state.sim.time_s)
             state.script_host.push_telemetry(telemetry)
             state.recorder.add_frame(telemetry)
 
         if state.clients:
             dead_clients = []
+            state.camera_seq += 1
+            send_camera = (
+                state.latest_frame_jpeg is not None
+                and state.camera_seq % state.camera_send_stride == 0
+            )
+            camera_payload = None
+            if send_camera:
+                camera_payload = {
+                    "type": "camera",
+                    "jpeg": base64.b64encode(state.latest_frame_jpeg).decode("ascii"),
+                }
             for client in state.clients:
                 try:
                     await client.send_json({"type": "telemetry", **telemetry})
+                    if camera_payload is not None:
+                        await client.send_json(camera_payload)
                 except Exception:
                     dead_clients.append(client)
             for client in dead_clients:

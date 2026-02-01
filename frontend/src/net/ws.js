@@ -1,7 +1,8 @@
 export class WsClient {
-  constructor(url, onTelemetry) {
+  constructor(url, onTelemetry, onCamera) {
     this.url = url;
     this.onTelemetry = onTelemetry;
+    this.onCamera = onCamera;
     this.ws = null;
     this.isOpen = false;
   }
@@ -20,6 +21,8 @@ export class WsClient {
         const data = JSON.parse(event.data);
         if (data.type === "telemetry") {
           this.onTelemetry(data);
+        } else if (data.type === "camera" && this.onCamera) {
+          this.onCamera(data);
         }
       } catch (err) {
         console.error("WS parse error", err);

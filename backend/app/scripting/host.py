@@ -22,6 +22,7 @@ def _run_script(
         "abs": abs,
         "sum": sum,
         "len": len,
+        "float": float,
         "print": print,
         "__import__": __import__,
     }

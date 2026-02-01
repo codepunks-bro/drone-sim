@@ -10,6 +10,12 @@ const telemetryEl = document.getElementById("telemetry");
 const runEl = document.getElementById("run");
 const stopEl = document.getElementById("stop");
 const scriptEl = document.getElementById("script");
+const cameraFrameEl = document.getElementById("camera-frame");
+const testStartEl = document.getElementById("test-start");
+const testStopEl = document.getElementById("test-stop");
+const testStatusEl = document.getElementById("test-status");
+const loadAutopilotEl = document.getElementById("load-autopilot");
+const runAutopilotEl = document.getElementById("run-autopilot");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0a0a);
@@ -119,18 +125,67 @@ window.addEventListener("blur", () => {
 
 const apiHost = location.hostname || "127.0.0.1";
 const apiBase = `http://${apiHost}:8000`;
-const ws = new WsClient(`ws://${apiHost}:8000/ws`, (telemetry) => {
-  const pos = telemetry.pos || [0, 0, 0];
-  const rot = telemetry.rot || [0, 0, 0];
-  drone.position.set(pos[0], pos[2], pos[1]);
-  drone.rotation.set(rot[1], rot[2], rot[0]);
-  telemetryEl.textContent = JSON.stringify(telemetry, null, 2);
-});
+const ws = new WsClient(
+  `ws://${apiHost}:8000/ws`,
+  (telemetry) => {
+    const pos = telemetry.pos || [0, 0, 0];
+    const rot = telemetry.rot || [0, 0, 0];
+    drone.position.set(pos[0], pos[2], pos[1]);
+    drone.rotation.set(rot[1], rot[2], rot[0]);
+    telemetryEl.textContent = JSON.stringify(telemetry, null, 2);
+  },
+  (cameraMsg) => {
+    if (cameraMsg.jpeg) {
+      cameraFrameEl.src = `data:image/jpeg;base64,${cameraMsg.jpeg}`;
+    }
+  }
+);
 ws.connect();
 
 setInterval(() => {
   ws.sendCommand(getCommand());
 }, 50);
+
+const autopilotScript = `def run(sdk):
+    import time
+    hover_throttle = 0.6
+    rate_limit = 0.8
+    gain = 0.9
+    search_yaw = 0.4
+    offset_limit = 0.12
+    area_min = 150.0
+    required_stable = 8
+    stable_frames = 0
+
+    while not sdk.should_stop():
+        vision = sdk.get_vision(timeout=0.2)
+        if not vision or not vision.get("target_visible"):
+            sdk.set_command(hover_throttle, 0.0, 0.0, search_yaw)
+            stable_frames = 0
+            time.sleep(0.02)
+            continue
+
+        offset_x, offset_y = vision.get("target_offset", [0.0, 0.0])
+        area = float(vision.get("target_area", 0.0))
+        if (
+            abs(offset_x) <= offset_limit
+            and abs(offset_y) <= offset_limit
+            and area >= area_min
+        ):
+            stable_frames += 1
+        else:
+            stable_frames = 0
+
+        if stable_frames >= required_stable:
+            sdk.set_command(hover_throttle, 0.0, 0.0, 0.0)
+            time.sleep(0.05)
+            continue
+
+        pitch_rate = max(-rate_limit, min(rate_limit, offset_x * gain))
+        roll_rate = max(-rate_limit, min(rate_limit, -offset_y * gain))
+        sdk.set_command(hover_throttle, pitch_rate, roll_rate, 0.0)
+        time.sleep(0.02)
+`;
 
 runEl.addEventListener("click", async () => {
   await fetch(`${apiBase}/scripts/run`, {
@@ -143,6 +198,42 @@ runEl.addEventListener("click", async () => {
 stopEl.addEventListener("click", async () => {
   await fetch(`${apiBase}/scripts/stop`, { method: "POST" });
 });
+
+loadAutopilotEl.addEventListener("click", () => {
+  scriptEl.value = autopilotScript;
+});
+
+runAutopilotEl.addEventListener("click", async () => {
+  scriptEl.value = autopilotScript;
+  await fetch(`${apiBase}/scripts/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source: scriptEl.value }),
+  });
+});
+
+testStartEl.addEventListener("click", async () => {
+  await fetch(`${apiBase}/tests/start`, { method: "POST" });
+});
+
+testStopEl.addEventListener("click", async () => {
+  await fetch(`${apiBase}/tests/stop`, { method: "POST" });
+});
+
+async function refreshTestStatus() {
+  try {
+    const response = await fetch(`${apiBase}/tests/status`);
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    testStatusEl.textContent = JSON.stringify(data, null, 2);
+  } catch (error) {
+    // Ignore transient test status errors.
+  }
+}
+
+setInterval(refreshTestStatus, 500);
 
 function animate() {
   requestAnimationFrame(animate);
